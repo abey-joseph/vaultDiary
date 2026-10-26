@@ -1,0 +1,7 @@
+dist
+dev-dist
+coverage
+package-lock.json
+recovery/recovery.html
+tests/fixtures
+src/crypto/bip39-english.txt
