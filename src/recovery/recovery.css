@@ -1,0 +1,116 @@
+:root {
+  color-scheme: light dark;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  line-height: 1.5;
+}
+body {
+  margin: 0;
+  background: Canvas;
+  color: CanvasText;
+}
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1.25rem;
+}
+h1 {
+  font-size: 1.5rem;
+}
+h2 {
+  font-size: 1.15rem;
+  margin-top: 0;
+}
+.card {
+  border: 1px solid #8884;
+  border-radius: 12px;
+  padding: 1rem;
+  margin: 1rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+.button,
+button {
+  font: inherit;
+  border-radius: 10px;
+  border: 1px solid #8886;
+  padding: 0.6rem 1rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+.primary {
+  background: #3b5bdb;
+  border-color: #3b5bdb;
+  color: #fff;
+  font-weight: 600;
+  justify-content: center;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.link {
+  border: none;
+  text-decoration: underline;
+  color: #3b5bdb;
+}
+input[type='password'],
+textarea {
+  font: inherit;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.6rem;
+  border-radius: 10px;
+  border: 1px solid #8886;
+  background: Field;
+  color: FieldText;
+}
+label {
+  font-weight: 600;
+}
+.muted {
+  opacity: 0.7;
+}
+.small {
+  font-size: 0.85rem;
+}
+.status {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+}
+.status:empty {
+  display: none;
+}
+.status.error {
+  background: #ffe3e3;
+  color: #5c0b0b;
+}
+.status.ok {
+  background: #e3f6e8;
+  color: #1f6b35;
+}
+.status.info {
+  background: #8881;
+}
+#results ul {
+  padding-left: 1.2rem;
+}
+#results a {
+  overflow-wrap: anywhere;
+}

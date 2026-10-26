@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="%CSP%" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Vault Diary — offline recovery</title>
+    <style>
+      %STYLE%
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Vault Diary — offline recovery</h1>
+      <p>
+        This single file decrypts a Vault Diary vault without the app, without Google and without
+        the internet. Nothing you select leaves this page: the page is not allowed to make any
+        network request.
+      </p>
+      <ol class="how">
+        <li>
+          On drive.google.com, right-click the <b>VaultDiary</b> folder → <b>Download</b>, or use a
+          backup zip from the app.
+        </li>
+        <li>Select the zip file(s) below, or the unzipped VaultDiary folder.</li>
+        <li>Enter your passphrase or your 24 recovery words and press <b>Decrypt</b>.</li>
+      </ol>
+      <section class="card">
+        <h2>1. Your encrypted files</h2>
+        <div class="row">
+          <label class="button"
+            >Choose zip file(s)<input
+              id="pick-zip"
+              type="file"
+              accept=".zip,application/zip"
+              multiple
+              hidden
+          /></label>
+          <label class="button"
+            >Choose a folder<input id="pick-folder" type="file" webkitdirectory multiple hidden
+          /></label>
+          <button id="clear" type="button" class="link">Clear</button>
+        </div>
+        <p id="selection" class="muted">Nothing selected yet.</p>
+      </section>
+      <form id="form" class="card" autocomplete="off">
+        <h2>2. Unlock</h2>
+        <div class="row">
+          <label><input type="radio" name="mode" id="mode-pass" checked /> Passphrase</label>
+          <label><input type="radio" name="mode" id="mode-words" /> Recovery words</label>
+        </div>
+        <div id="passphrase-field">
+          <label for="passphrase">Passphrase</label>
+          <input id="passphrase" type="password" autocomplete="off" />
+        </div>
+        <div id="words-field" hidden>
+          <label for="words">24 recovery words</label>
+          <textarea id="words" rows="4" autocapitalize="off" spellcheck="false"></textarea>
+        </div>
+        <button id="decrypt" type="submit" class="primary" disabled>Decrypt</button>
+        <p id="status" class="status" role="status"></p>
+      </form>
+      <section id="results"></section>
+      <p class="muted small">Format: VDV1 (see FORMAT.md).</p>
+    </main>
+    <script>
+      %SCRIPT%
+    </script>
+  </body>
+</html>
