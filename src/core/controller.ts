@@ -134,7 +134,12 @@ export class Controller extends Emitter {
       this.set({ phase: 'unconfigured' })
       return
     }
-    if (this.online) void this.auth.preload().catch(() => this.emit())
+    if (this.online) {
+      void this.auth.preload().then(
+        () => this.emit(),
+        () => this.emit(),
+      )
+    }
 
     const json = await this.db.getKv<string>(KV.vaultJson)
     this.location = (await this.db.getKv<VaultLocation>(KV.location)) ?? null
@@ -157,7 +162,10 @@ export class Controller extends Emitter {
     this.online = online
     this.emit()
     if (online) {
-      void this.auth.preload().catch(() => {})
+      void this.auth.preload().then(
+        () => this.emit(),
+        () => {},
+      )
       this.kickAll()
     }
   }

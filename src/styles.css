@@ -119,10 +119,7 @@ code {
 
 /* ---------------------------------------------------------------- controls */
 
-button,
-.button-like,
-a.primary,
-a.ghost {
+:where(button, .button-like, a.primary, a.ghost) {
   font: inherit;
   border-radius: 10px;
   border: 1px solid var(--border);

@@ -11,3 +11,4 @@ __pycache__/
 .firebase/
 firebase-debug.log
 recovered/
+e2e/screenshots/
