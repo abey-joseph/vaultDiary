@@ -1,8 +1,21 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { Controller } from './core/controller'
+import { applyTheme } from './core/prefs'
+import { App } from './ui/App'
+import { ControllerContext } from './ui/controllerContext'
+import { registerServiceWorker } from './pwa'
+import './styles.css'
+
+applyTheme()
+const controller = new Controller()
+void controller.init()
+registerServiceWorker()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <p>Vault Diary</p>
+    <ControllerContext.Provider value={controller}>
+      <App />
+    </ControllerContext.Provider>
   </StrictMode>,
 )

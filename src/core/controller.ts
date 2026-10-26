@@ -1,0 +1,542 @@
+// App orchestration: sign-in, vault discovery, setup, unlock/lock, auto-lock, sync scheduling.
+// React reads state from here (see useController); nothing in here touches the DOM except the
+// idle/online listeners and file downloads.
+import { wipe } from '../crypto/bytes'
+import { importMasterKey } from '../crypto/container'
+import { WrongSecretError } from '../crypto/errors'
+import {
+  changePassphrase,
+  createVault,
+  parseVault,
+  rewrapPassphrase,
+  unlockWithPassphrase,
+  unwrapWithRecoveryWords,
+  type NewVault,
+  type VaultFile,
+} from '../crypto/vault'
+import { FakeAuth, GoogleAuth } from '../drive/auth'
+import { HttpDrive } from '../drive/http'
+import { AuthError, OfflineError, type About, type DriveClient } from '../drive/types'
+import {
+  createVaultFolder,
+  findVaultFolder,
+  VAULT_FILE,
+  type VaultLocation,
+} from '../drive/vaultFolder'
+import { ZipWriter } from '../lib/zip'
+import type { Attachment } from '../model/entry'
+import { KV, VaultDB } from '../storage/db'
+import { SyncEngine } from '../sync/sync'
+import { UploadQueue } from '../sync/uploads'
+import { CLIENT_ID, FAKE_DRIVE, READ_ONLY } from './config'
+import { Emitter } from './emitter'
+import { getAutoLockMinutes } from './prefs'
+import { VaultSession } from './session'
+
+export type Phase =
+  | 'boot'
+  | 'unconfigured'
+  | 'signedOut'
+  | 'finding'
+  | 'setup'
+  | 'locked'
+  | 'resetPassphrase'
+  | 'unlocked'
+
+interface AuthLike {
+  ready: boolean
+  preload(): Promise<void>
+  hasToken(): boolean
+  getToken(): string | null
+  markExpired(): void
+  signIn(firstTime?: boolean): Promise<void>
+  signOut(): void
+}
+
+export interface StorageReport {
+  driveBytes: number
+  entryCount: number
+  fileCount: number
+  quotaUsage: number | null
+  quotaLimit: number | null
+  localBytes: number | null
+}
+
+const SYNC_INTERVAL = 3 * 60_000
+const LOCAL_CHANGE_DELAY = 2000
+
+export class Controller extends Emitter {
+  readonly readOnly = READ_ONLY
+  readonly db = new VaultDB()
+  readonly auth: AuthLike
+  readonly drive: DriveClient
+  phase: Phase = 'boot'
+  error: string | null = null
+  busy = false
+  online = typeof navigator === 'undefined' ? true : navigator.onLine
+  account: About | null = null
+  vault: VaultFile | null = null
+  location: VaultLocation | null = null
+  session: VaultSession | null = null
+  sync: SyncEngine | null = null
+  readonly uploads: UploadQueue
+  /** Set while the setup screens show the recovery words. */
+  pendingSetup: NewVault | null = null
+  private pendingRawMk: Uint8Array | null = null
+  private lastActivity = Date.now()
+  private syncTimer: ReturnType<typeof setInterval> | null = null
+  private changeTimer: ReturnType<typeof setTimeout> | null = null
+  private flushers = new Set<() => Promise<void>>()
+  private unsubscribers: (() => void)[] = []
+
+  constructor() {
+    super()
+    const changed = () => this.emit()
+    if (FAKE_DRIVE) {
+      this.auth = new FakeAuth(changed)
+      this.drive = null as unknown as DriveClient // replaced in init() by the dev fake
+    } else {
+      this.auth = new GoogleAuth(CLIENT_ID, () => this.onAuthChange())
+      this.drive = new HttpDrive(
+        () => this.auth.getToken(),
+        () => this.auth.markExpired(),
+      )
+    }
+    this.uploads = new UploadQueue(
+      this.db,
+      () => (this.auth.hasToken() && this.drive ? this.drive : null),
+      () => this.location,
+    )
+    this.uploads.subscribe(changed)
+  }
+
+  private set(patch: Partial<Pick<Controller, 'phase' | 'error' | 'busy'>>) {
+    Object.assign(this, patch)
+    this.emit()
+  }
+
+  // ---------------------------------------------------------------- startup
+
+  async init(): Promise<void> {
+    if (FAKE_DRIVE) {
+      const { createDevFakeDrive } = await import('../drive/devFake')
+      ;(this as { drive: DriveClient }).drive = await createDevFakeDrive(this.auth)
+    }
+    window.addEventListener('online', () => this.setOnline(true))
+    window.addEventListener('offline', () => this.setOnline(false))
+    for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel', 'input']) {
+      window.addEventListener(ev, () => this.touch(), { passive: true, capture: true })
+    }
+    document.addEventListener('visibilitychange', () => this.checkIdle())
+    setInterval(() => this.checkIdle(), 15_000)
+
+    if (!CLIENT_ID && !FAKE_DRIVE) {
+      this.set({ phase: 'unconfigured' })
+      return
+    }
+    if (this.online) void this.auth.preload().catch(() => this.emit())
+
+    const json = await this.db.getKv<string>(KV.vaultJson)
+    this.location = (await this.db.getKv<VaultLocation>(KV.location)) ?? null
+    this.account = (await this.db.getKv<About>(KV.account)) ?? null
+    if (json) {
+      this.vault = parseVault(json)
+      this.set({ phase: 'locked' })
+      void this.uploads.kick()
+    } else {
+      this.set({ phase: 'signedOut' })
+    }
+    try {
+      await navigator.storage?.persist?.()
+    } catch {
+      // best effort: asks the browser not to evict our offline cache
+    }
+  }
+
+  private setOnline(online: boolean) {
+    this.online = online
+    this.emit()
+    if (online) {
+      void this.auth.preload().catch(() => {})
+      this.kickAll()
+    }
+  }
+
+  private onAuthChange() {
+    this.emit()
+    if (this.auth.hasToken()) this.kickAll()
+  }
+
+  private kickAll() {
+    void this.uploads.kick()
+    void this.sync?.sync()
+  }
+
+  // ---------------------------------------------------------------- Google
+
+  /** Must be called from a tap/click handler (opens Google's popup). */
+  async signIn(): Promise<void> {
+    this.set({ error: null })
+    try {
+      await this.auth.signIn(this.phase === 'signedOut')
+      await this.checkAccount()
+      if (this.phase === 'signedOut') await this.findVault()
+      this.kickAll()
+    } catch (e) {
+      this.set({ error: (e as Error).message })
+    }
+  }
+
+  private async checkAccount() {
+    try {
+      const about = await this.drive.about()
+      const known = await this.db.getKv<About>(KV.account)
+      if (known?.email && about.email && known.email !== about.email) {
+        this.auth.signOut()
+        throw new Error(
+          `This device's vault belongs to ${known.email}, but you signed in as ${about.email}. ` +
+            'Sign in with the right account, or remove the vault from this device in Settings.',
+        )
+      }
+      this.account = about
+      await this.db.setKv(KV.account, about)
+      this.emit()
+    } catch (e) {
+      if (e instanceof OfflineError) return
+      throw e
+    }
+  }
+
+  private async findVault() {
+    this.set({ phase: 'finding', busy: true })
+    try {
+      const found = await findVaultFolder(this.drive)
+      if (found) {
+        this.location = found.location
+        await this.db.setKv(KV.location, found.location)
+      }
+      if (found?.vaultFile) {
+        const text = await (await this.drive.download(found.vaultFile.id)).text()
+        this.vault = parseVault(text)
+        await this.db.setKv(KV.vaultJson, text)
+        await this.db.setKv(KV.vaultDriveId, found.vaultFile.id)
+        await this.db.setKv(KV.vaultMd5, found.vaultFile.md5)
+        this.set({ phase: 'locked', busy: false })
+      } else {
+        this.set({ phase: 'setup', busy: false })
+      }
+    } catch (e) {
+      this.set({ phase: 'signedOut', busy: false, error: (e as Error).message })
+    }
+  }
+
+  // ---------------------------------------------------------------- setup
+
+  async beginSetup(passphrase: string): Promise<string[]> {
+    this.set({ busy: true, error: null })
+    try {
+      this.pendingSetup = await createVault(passphrase)
+      return this.pendingSetup.recoveryWords
+    } finally {
+      this.set({ busy: false })
+    }
+  }
+
+  cancelSetup() {
+    this.pendingSetup = null
+    this.emit()
+  }
+
+  /** Called once the user has confirmed the recovery words. Writes vault.json to Drive. */
+  async finishSetup(): Promise<void> {
+    const pending = this.pendingSetup
+    if (!pending) return
+    this.set({ busy: true, error: null })
+    try {
+      if (!this.location) {
+        const created = await createVaultFolder(this.drive)
+        this.location = created.location
+        await this.db.setKv(KV.location, created.location)
+      }
+      const text = JSON.stringify(pending.vault, null, 2)
+      const file = await this.drive.createFile(
+        this.location.rootId,
+        VAULT_FILE,
+        new Blob([text], { type: 'application/json' }),
+      )
+      await this.db.setKv(KV.vaultJson, text)
+      await this.db.setKv(KV.vaultDriveId, file.id)
+      await this.db.setKv(KV.vaultMd5, file.md5)
+      this.vault = pending.vault
+      this.pendingSetup = null
+      await this.openSession(pending.mk)
+    } catch (e) {
+      this.set({
+        error:
+          e instanceof OfflineError || e instanceof AuthError
+            ? 'Could not save to Google Drive. Check your connection, then try again.'
+            : (e as Error).message,
+      })
+    } finally {
+      this.set({ busy: false })
+    }
+  }
+
+  // ---------------------------------------------------------------- unlock / lock
+
+  async unlock(passphrase: string): Promise<boolean> {
+    if (!this.vault) return false
+    this.set({ busy: true, error: null })
+    try {
+      const mk = await unlockWithPassphrase(this.vault, passphrase)
+      await this.openSession(mk)
+      return true
+    } catch (e) {
+      this.set({ error: (e as Error).message })
+      return false
+    } finally {
+      this.set({ busy: false })
+    }
+  }
+
+  async unlockWithWords(words: string): Promise<boolean> {
+    if (!this.vault) return false
+    this.set({ busy: true, error: null })
+    try {
+      const raw = await unwrapWithRecoveryWords(this.vault, words)
+      if (this.readOnly) {
+        // Can't save a new passphrase in a read-only build; just open the vault.
+        try {
+          await this.openSession(await importMasterKey(raw))
+        } finally {
+          wipe(raw)
+        }
+      } else {
+        this.pendingRawMk = raw
+        this.set({ phase: 'resetPassphrase' })
+      }
+      return true
+    } catch (e) {
+      this.set({ error: (e as Error).message })
+      return false
+    } finally {
+      this.set({ busy: false })
+    }
+  }
+
+  /** After a recovery-word unlock: the user must choose a new passphrase. */
+  async setNewPassphrase(passphrase: string): Promise<void> {
+    const raw = this.pendingRawMk
+    if (!raw || !this.vault) return
+    this.set({ busy: true, error: null })
+    try {
+      const updated = await rewrapPassphrase(this.vault, raw, passphrase)
+      await this.saveVault(updated)
+      const mk = await importMasterKey(raw)
+      wipe(raw)
+      this.pendingRawMk = null
+      await this.openSession(mk)
+    } catch (e) {
+      this.set({ error: (e as Error).message })
+    } finally {
+      this.set({ busy: false })
+    }
+  }
+
+  async changePassphrase(current: string, next: string): Promise<void> {
+    if (!this.vault) throw new Error('No vault.')
+    try {
+      await this.saveVault(await changePassphrase(this.vault, current, next))
+    } catch (e) {
+      if (e instanceof WrongSecretError)
+        throw new Error('Your current passphrase is wrong.', { cause: e })
+      throw e
+    }
+    void this.sync?.sync()
+  }
+
+  private async saveVault(vault: VaultFile) {
+    const text = JSON.stringify(vault, null, 2)
+    await this.db.setKv(KV.vaultJson, text)
+    await this.db.setKv(KV.vaultDirty, true)
+    this.vault = vault
+    this.emit()
+  }
+
+  private async openSession(mk: CryptoKey) {
+    const session = await VaultSession.open(this.db, mk)
+    session.onLocalChange = () => this.scheduleSync()
+    const sync = new SyncEngine({
+      db: this.db,
+      session,
+      getDrive: () => (this.auth.hasToken() ? this.drive : null),
+      getLocation: () => this.location,
+      readOnly: this.readOnly,
+      onVaultChanged: (json) => {
+        this.vault = parseVault(json)
+        this.emit()
+      },
+    })
+    this.unsubscribers = [session.subscribe(() => this.emit()), sync.subscribe(() => this.emit())]
+    this.session = session
+    this.sync = sync
+    this.lastActivity = Date.now()
+    this.syncTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') void sync.sync()
+    }, SYNC_INTERVAL)
+    this.set({ phase: 'unlocked', error: null })
+    await sync.refreshPending()
+    void sync.sync()
+    void this.uploads.kick()
+  }
+
+  /** Editors register a flush so typing isn't lost when the vault locks. */
+  registerFlush(flush: () => Promise<void>): () => void {
+    this.flushers.add(flush)
+    return () => this.flushers.delete(flush)
+  }
+
+  async lock(): Promise<void> {
+    if (this.pendingRawMk) {
+      wipe(this.pendingRawMk)
+      this.pendingRawMk = null
+    }
+    if (this.session) {
+      for (const flush of [...this.flushers]) {
+        try {
+          await flush()
+        } catch {
+          // keep locking
+        }
+      }
+    }
+    for (const u of this.unsubscribers) u()
+    this.unsubscribers = []
+    if (this.syncTimer) clearInterval(this.syncTimer)
+    if (this.changeTimer) clearTimeout(this.changeTimer)
+    this.session?.lock()
+    this.session = null
+    this.sync = null
+    if (this.phase === 'unlocked' || this.phase === 'resetPassphrase') {
+      this.set({ phase: 'locked', error: null })
+    }
+  }
+
+  private touch() {
+    this.lastActivity = Date.now()
+  }
+
+  private checkIdle() {
+    if (this.phase !== 'unlocked' && this.phase !== 'resetPassphrase') return
+    if (Date.now() - this.lastActivity >= getAutoLockMinutes() * 60_000) void this.lock()
+  }
+
+  private scheduleSync() {
+    if (this.changeTimer) clearTimeout(this.changeTimer)
+    this.changeTimer = setTimeout(() => this.kickAll(), LOCAL_CHANGE_DELAY)
+    this.emit()
+  }
+
+  syncNow() {
+    this.kickAll()
+  }
+
+  // ---------------------------------------------------------------- attachments, backup
+
+  async attachmentBlob(
+    attachment: Attachment,
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<Blob> {
+    const session = this.session
+    if (!session) throw new Error('The vault is locked.')
+    const queued = await this.db.uploads.get(attachment.fileId)
+    let encrypted: Blob
+    if (queued) {
+      encrypted = queued.blob
+    } else {
+      if (!this.auth.hasToken() || !this.location) {
+        throw new Error('Connect to Google Drive to download this attachment.')
+      }
+      const [file] = await this.drive.findByName(this.location.filesId, `${attachment.fileId}.vdf`)
+      if (!file) throw new Error('This attachment has not reached Google Drive yet.')
+      encrypted = await this.drive.download(file.id, onProgress)
+    }
+    return session.decryptAttachment(attachment, encrypted)
+  }
+
+  async backup(onProgress: (done: number, total: number) => void): Promise<Blob> {
+    if (!this.location || !this.auth.hasToken()) {
+      throw new Error('Connect to Google Drive to make a backup.')
+    }
+    await this.sync?.sync()
+    const loc = this.location
+    const groups: [string, string][] = [
+      ['', loc.rootId],
+      ['entries/', loc.entriesId],
+      ['files/', loc.filesId],
+    ]
+    const items: { path: string; id: string }[] = []
+    for (const [prefix, folder] of groups) {
+      for (const f of await this.drive.list(folder)) {
+        if (f.mimeType.endsWith('.folder')) continue
+        items.push({ path: `VaultDiary/${prefix}${f.name}`, id: f.id })
+      }
+    }
+    const zip = new ZipWriter()
+    let done = 0
+    for (const item of items) {
+      onProgress(done, items.length)
+      await zip.add(item.path, await this.drive.download(item.id))
+      done++
+    }
+    onProgress(done, items.length)
+    return zip.finish()
+  }
+
+  async storageReport(): Promise<StorageReport> {
+    const report: StorageReport = {
+      driveBytes: 0,
+      entryCount: 0,
+      fileCount: 0,
+      quotaUsage: null,
+      quotaLimit: null,
+      localBytes: null,
+    }
+    try {
+      report.localBytes = (await navigator.storage?.estimate?.())?.usage ?? null
+    } catch {
+      // unavailable
+    }
+    if (this.location && this.auth.hasToken()) {
+      const loc = this.location
+      const [root, entries, files, about] = await Promise.all([
+        this.drive.list(loc.rootId),
+        this.drive.list(loc.entriesId),
+        this.drive.list(loc.filesId),
+        this.drive.about(),
+      ])
+      for (const f of [...root, ...entries, ...files]) report.driveBytes += f.size
+      report.entryCount = entries.length
+      report.fileCount = files.length
+      report.quotaUsage = about.usage
+      report.quotaLimit = about.limit
+    }
+    return report
+  }
+
+  /** Removes the vault's offline copy from this browser (Drive is untouched). */
+  async forgetDevice(): Promise<void> {
+    await this.lock()
+    this.uploads.stop()
+    await this.db.wipeAll()
+    this.auth.signOut()
+    this.vault = null
+    this.location = null
+    this.account = null
+    this.set({ phase: 'signedOut', error: null })
+  }
+
+  clearError() {
+    this.set({ error: null })
+  }
+}
