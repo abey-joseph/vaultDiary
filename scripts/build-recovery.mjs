@@ -32,21 +32,25 @@ const result = await build({
 // Escape "</script" so the inline script can't terminate early.
 const script = result.outputFiles[0].text.replace(/<\/script/gi, '<\\/script')
 const style = readFileSync('src/recovery/recovery.css', 'utf8').trim()
+const template = readFileSync('src/recovery/recovery.template.html', 'utf8')
+const assembled = template.replace('%STYLE%', () => style).replace('%SCRIPT%', () => script)
+
+// Hash exactly what ends up between the tags (including any whitespace from the template).
 const sha = (s) => `'sha256-${createHash('sha256').update(s, 'utf8').digest('base64')}'`
+const inner = (tag) => {
+  const m = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(assembled)
+  if (!m) throw new Error(`No <${tag}> in template`)
+  return m[1]
+}
 const csp = [
   "default-src 'none'",
-  `script-src ${sha(script)} 'wasm-unsafe-eval'`,
-  `style-src ${sha(style)}`,
+  `script-src ${sha(inner('script'))} 'wasm-unsafe-eval'`,
+  `style-src ${sha(inner('style'))}`,
   'img-src blob: data:',
   "base-uri 'none'",
   "form-action 'none'",
 ].join('; ')
-
-const template = readFileSync('src/recovery/recovery.template.html', 'utf8')
-const html = template
-  .replace('%CSP%', csp)
-  .replace('%STYLE%', () => style)
-  .replace('%SCRIPT%', () => script)
+const html = assembled.replace('%CSP%', csp)
 writeFileSync('recovery/recovery.html', html)
 console.log(`recovery/recovery.html: ${(html.length / 1024).toFixed(0)} KiB`)
 
