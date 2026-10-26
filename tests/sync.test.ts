@@ -29,6 +29,10 @@ async function device() {
     KV.vaultJson,
     JSON.stringify({ format: 'vaultdiary-vault', v: 1, vaultId: 'a'.repeat(32), wrappers: [] }),
   )
+  // Like the app after setup: the first device has written vault.json to Drive.
+  if (![...drive.files.values()].some((f) => f.name === 'vault.json' && !f.trashed)) {
+    await db.setKv(KV.vaultDirty, true)
+  }
   const session = await VaultSession.open(db, mk)
   const sync = new SyncEngine({
     db,
@@ -252,6 +256,20 @@ describe('sync', () => {
     drive.offline = false
     await a.sync.sync()
     expect(a.sync.status).toMatchObject({ state: 'idle', pendingEntries: 0 })
+  })
+
+  it('never wipes the offline copy when the Drive folder suddenly looks empty', async () => {
+    const a = await device()
+    for (let i = 0; i < 6; i++) await a.session.save(entry(`keep ${i}`))
+    await a.db.setKv(KV.vaultDirty, true)
+    await a.sync.sync()
+    // The user trashes the whole VaultDiary folder: its children no longer list.
+    for (const f of drive.files.values()) if (f.parent !== null) f.trashed = true
+    await a.sync.sync()
+    expect(a.session.entries.size).toBe(6)
+    expect(await a.db.entries.count()).toBe(6)
+    expect(a.sync.status.problems.join(' ')).toMatch(/disappeared from Google Drive/)
+    expect(a.sync.status.problems.join(' ')).toMatch(/vault.json was missing/)
   })
 
   it('reports expired Google sign-in', async () => {

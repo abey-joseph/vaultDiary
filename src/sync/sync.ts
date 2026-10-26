@@ -122,10 +122,24 @@ export class SyncEngine extends Emitter {
         rootFiles
           .filter((f) => f.name === name)
           .sort((a, b) => (a.modifiedTime < b.modifiedTime ? 1 : -1))[0] ?? null
-      await this.syncVault(drive, location, newest(VAULT_FILE))
+      const vaultRemote = newest(VAULT_FILE)
+      const vaultPending = await db.getKv<boolean>(KV.vaultDirty)
+      if (!vaultRemote && !vaultPending) {
+        problems.push(
+          'vault.json was missing from the VaultDiary folder in Google Drive; this device restored it.',
+        )
+        if (!readOnly) await db.setKv(KV.vaultDirty, true)
+      }
+      await this.syncVault(drive, location, vaultRemote)
       if (!readOnly) await this.processDeletes(drive, location)
       const indexRemote = newest(INDEX_FILE)
-      const pulled = await this.pull(drive, location, indexRemote, problems)
+      const pulled = await this.pull(
+        drive,
+        location,
+        indexRemote,
+        problems,
+        !vaultRemote && !vaultPending,
+      )
       const pushed = readOnly ? 0 : await this.push(drive, location, problems)
       if (!readOnly && pulled.complete && (pulled.changed || pushed > 0 || !indexRemote)) {
         await this.writeIndex(drive, location, indexRemote)
@@ -186,6 +200,7 @@ export class SyncEngine extends Emitter {
     location: VaultLocation,
     indexRemote: DriveFile | null,
     problems: string[],
+    suspicious: boolean,
   ): Promise<{ changed: boolean; complete: boolean }> {
     const { db, session } = this.deps
     const remote = new Map<string, DriveFile>()
@@ -236,15 +251,23 @@ export class SyncEngine extends Emitter {
     const results = await runLimited(tasks, 4)
     let changed = results.some(Boolean)
 
-    for (const rec of records.values()) {
-      if (rec.driveId && !remote.has(rec.id)) {
-        changed = (await this.remoteDeleted(rec.id)) || changed
-      }
+    const synced = [...records.values()].filter((r) => r.driveId)
+    const vanished = synced.filter((r) => !remote.has(r.id))
+    // If the folder was trashed or emptied, Drive simply lists nothing. Never let that wipe the
+    // offline copy: mass disappearances are reported instead of applied.
+    const massVanish = vanished.length >= 5 && vanished.length > synced.length / 2
+    if (vanished.length && (suspicious || massVanish)) {
+      problems.push(
+        `${vanished.length} entries disappeared from Google Drive at once, so this device kept its ` +
+          'copies. If the VaultDiary folder was moved to the trash, restore it in drive.google.com.',
+      )
+    } else {
+      for (const rec of vanished) changed = (await this.remoteDeleted(rec.id)) || changed
     }
     const allLocal = [...remote.keys()].every((id) => session.entries.has(id))
     if (allLocal && session.summaries.size === 0) await db.deleteKv(KV.indexData)
     session.changed()
-    return { changed, complete: allLocal }
+    return { changed, complete: allLocal && !(vanished.length && (suspicious || massVanish)) }
   }
 
   private async localEntry(rec: EntryRecord): Promise<Entry | null> {
