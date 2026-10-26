@@ -1,0 +1,32 @@
+{
+  "format": "vaultdiary-vault",
+  "v": 1,
+  "vaultId": "d3bd017cdf6b3291b707b320fa30d0d7",
+  "createdAt": "2026-10-26T16:27:18.396Z",
+  "updatedAt": "2026-10-26T16:27:18.396Z",
+  "wrappers": [
+    {
+      "type": "passphrase",
+      "kdf": {
+        "name": "argon2id",
+        "version": 19,
+        "memoryKiB": 65536,
+        "iterations": 3,
+        "parallelism": 1,
+        "salt": "Pa1mib9bYDm9WF/X7a/IMg=="
+      },
+      "iv": "1rDxYzTMZKUZ9MtA",
+      "ct": "7+xxS7u/OrMFLNrmF93d/bH0rans2wqbuSurP4nbkqYZCCcZQMgDXKQblcSoh3dW"
+    },
+    {
+      "type": "recovery",
+      "kdf": {
+        "name": "hkdf-sha256",
+        "salt": "G0cdKQvoq0VaVRjSrX2LVQ==",
+        "info": "VaultDiary v1 recovery key"
+      },
+      "iv": "dCKG/CZCB7yFybxs",
+      "ct": "C77HJMjw/dGzcvbyneY5iEYbnLss12f0aLXCV0b949sIbdY/5E1yUqQ4mKL5S+uR"
+    }
+  ]
+}
