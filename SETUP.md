@@ -125,8 +125,9 @@ Firebase is used only to host the static files. No Firestore, no Firebase Auth, 
 
 1. Open <https://console.cloud.google.com/iam-admin/serviceaccounts> (same project).
 2. **Create service account** → name `github-deploy` → **Create and continue**.
-3. Add these roles: **Firebase Hosting Admin**, **API Keys Viewer**, **Cloud Run Viewer** →
-   **Continue → Done**.
+3. Add these four roles: **Firebase Hosting Admin**, **Service Usage Consumer**, **API Keys
+   Viewer**, **Cloud Run Viewer** → **Continue → Done**. (To add a role to an existing account:
+   **IAM & Admin → IAM** → pencil icon on its row → **Add another role**.)
 4. Click the new account → **Keys → Add key → Create new key → JSON**. A file downloads.
 5. In GitHub: your repository → **Settings → Secrets and variables → Actions → Secrets → New
    repository secret**. Name `FIREBASE_SERVICE_ACCOUNT`, value: the whole content of the JSON file.
@@ -146,8 +147,9 @@ npx firebase-tools deploy --only hosting --project YOUR-FIREBASE-ID
 
 ## 6. GitHub Pages (backup site)
 
-1. Repository → **Settings → Pages**.
-2. **Build and deployment → Source: GitHub Actions.**
+1. Repository → **Settings → General → Default branch**: it must be **`main`** (click the
+   ⇄ switch icon, choose `main`, **Update**). GitHub only lets the default branch deploy to Pages.
+2. Repository → **Settings → Pages** → **Build and deployment → Source: GitHub Actions.**
 3. The site will be `https://YOUR-GITHUB-NAME.github.io/YOUR-REPO/`. Make sure
    `https://YOUR-GITHUB-NAME.github.io` is in the OAuth origins.
 
@@ -190,11 +192,14 @@ passphrase.
 
 ## Troubleshooting
 
-| Problem                                                    | Fix                                                                                                |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `Error 400: origin_mismatch` / "redirect_uri_mismatch"     | The address in the browser isn't in **Authorised JavaScript origins** exactly. Add it, wait 5 min. |
-| "Access blocked: app has not completed verification" / 403 | Add your Gmail as a **Test user** (step 3.6), or publish the app.                                  |
-| The Google window doesn't open                             | Allow pop-ups for the site.                                                                        |
-| "Google Drive needs you to sign in again"                  | Normal: Google sign-ins last about an hour and are never stored. Tap **Continue**.                 |
-| A new, empty vault appears instead of mine                 | You are using a different OAuth client ID / Cloud project, or a different Google account.          |
-| The app says "no OAuth client ID"                          | `VITE_GOOGLE_CLIENT_ID` wasn't set at build time (repository variable `GOOGLE_CLIENT_ID`).         |
+| Problem                                                                              | Fix                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Error 400: origin_mismatch` / "redirect_uri_mismatch"                               | The address in the browser isn't in **Authorised JavaScript origins** exactly. Add it, wait 5 min.                                                                                              |
+| "Access blocked: app has not completed verification" / 403                           | Add your Gmail as a **Test user** (step 3.6), or publish the app.                                                                                                                               |
+| The Google window doesn't open                                                       | Allow pop-ups for the site.                                                                                                                                                                     |
+| "Google Drive needs you to sign in again"                                            | Normal: Google sign-ins last about an hour and are never stored. Tap **Continue**.                                                                                                              |
+| A new, empty vault appears instead of mine                                           | You are using a different OAuth client ID / Cloud project, or a different Google account.                                                                                                       |
+| The app says "no OAuth client ID"                                                    | `VITE_GOOGLE_CLIENT_ID` wasn't set at build time (repository variable `GOOGLE_CLIENT_ID`).                                                                                                      |
+| `Error 401: invalid_client` / "The OAuth client was not found"                       | The client ID is wrong: still the `.env.example` placeholder, mistyped, deleted, or from another project. Copy it again from **Credentials**; restart `npm run dev` after editing `.env.local`. |
+| Firebase deploy: `Permission denied to get service [firebasehosting.googleapis.com]` | Give the service account the **Service Usage Consumer** role (step 5), then re-run the failed jobs.                                                                                             |
+| Pages deploy fails in seconds with no log                                            | The default branch isn't `main`, so the `github-pages` environment refuses it (step 6.1).                                                                                                       |
