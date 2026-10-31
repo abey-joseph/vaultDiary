@@ -1,4 +1,4 @@
-import { CLIENT_ID } from '../../core/config'
+import { CLIENT_ID, CLIENT_ID_PROBLEM } from '../../core/config'
 import { ErrorNote, Spinner } from '../components'
 import { useController } from '../controllerContext'
 
@@ -6,9 +6,12 @@ export function Unconfigured() {
   return (
     <main className="gate">
       <h1>Vault Diary</h1>
+      <p>{CLIENT_ID_PROBLEM}</p>
       <p>
-        This build has no Google OAuth client ID. Set <code>VITE_GOOGLE_CLIENT_ID</code> when
-        building (see SETUP.md).
+        Put the client ID from Google Cloud (APIs &amp; Services → Credentials) into{' '}
+        <code>VITE_GOOGLE_CLIENT_ID</code> — in <code>.env.local</code> for <code>npm run dev</code>
+        (then restart it), or in the repository variable <code>GOOGLE_CLIENT_ID</code> for deployed
+        builds. See SETUP.md.
       </p>
     </main>
   )
